@@ -76,6 +76,15 @@ export class DocumentsController {
     return this.documentsService.getDocumentPreview(userId, documentId);
   }
 
+  @Post(':id/reindex')
+  async reindexDocument(
+    @Request() req: any,
+    @Param('id', ParseUUIDPipe) documentId: string,
+  ): Promise<{ queued: boolean; message: string }> {
+    const userId = req.user.id;
+    return this.documentsService.queueDocumentProcessing(userId, documentId);
+  }
+
   @Delete(':id')
   @HttpCode(HttpStatus.NO_CONTENT)
   async deleteDocument(

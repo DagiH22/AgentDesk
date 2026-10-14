@@ -47,6 +47,35 @@ class EnvironmentVariables {
   @IsNumber()
   @IsOptional()
   MAX_DOCUMENT_SIZE: number = 5242880; // Default 5MB
+
+  @IsString()
+  @IsOptional()
+  EMBEDDING_PROVIDER?: string = 'openai';
+
+  @IsString()
+  @IsOptional()
+  EMBEDDING_MODEL?: string = 'text-embedding-3-small';
+
+  @IsString()
+  @IsOptional()
+  EMBEDDING_API_KEY?: string;
+
+  @IsString()
+  @IsOptional()
+  OPENAI_API_KEY?: string;
+
+  @IsString()
+  @IsOptional()
+  EMBEDDING_API_URL?: string;
+
+  @IsString()
+  @IsOptional()
+  REDIS_HOST?: string = 'localhost';
+
+  @Type(() => Number)
+  @IsNumber()
+  @IsOptional()
+  REDIS_PORT?: number = 6379;
 }
 
 export function validate(config: Record<string, unknown>) {

@@ -1,5 +1,14 @@
 import 'multer';
-import { Injectable, Logger, NotFoundException, InternalServerErrorException, BadRequestException } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  NotFoundException,
+  InternalServerErrorException,
+  BadRequestException,
+  Optional,
+} from '@nestjs/common';
+import { InjectQueue } from '@nestjs/bullmq';
+import { Queue } from 'bullmq';
 import { DatabaseService } from '../database/database.service';
 import { StorageService } from '../storage/storage.service';
 import { documents } from '@agentdesk/db';
@@ -8,6 +17,12 @@ import { randomUUID } from 'crypto';
 import { extname } from 'path';
 import { DocumentResponse } from './types/document.types';
 import { ExtractionService } from '../extraction/extraction.service';
+import {
+  DOCUMENT_PROCESSING_QUEUE,
+  PROCESS_DOCUMENT_JOB,
+  DocumentJobData,
+} from './document.processor';
+
 @Injectable()
 export class DocumentsService {
   private readonly logger = new Logger(DocumentsService.name);
@@ -16,6 +31,9 @@ export class DocumentsService {
     private readonly databaseService: DatabaseService,
     private readonly storageService: StorageService,
     private readonly extractionService: ExtractionService,
+    @Optional()
+    @InjectQueue(DOCUMENT_PROCESSING_QUEUE)
+    private readonly documentQueue?: Queue<DocumentJobData>,
   ) {}
 
   async uploadDocument(
@@ -42,8 +60,9 @@ export class DocumentsService {
       throw new InternalServerErrorException('Failed to upload document to storage');
     }
 
+    let newDoc: any;
     try {
-      const [newDoc] = await this.databaseService.db
+      [newDoc] = await this.databaseService.db
         .insert(documents)
         .values({
           userId,
@@ -54,22 +73,84 @@ export class DocumentsService {
           status: 'uploaded',
         })
         .returning();
-
-      // eslint-disable-next-line @typescript-eslint/no-unused-vars
-      const { storageKey: _storageKey, ...safeDoc } = newDoc;
-      return safeDoc as DocumentResponse;
     } catch (error: any) {
       this.logger.error(`Failed to save document metadata in DB. Rolling back storage.`, error.stack);
-      
+
       // Cleanup storage since DB failed
       try {
         await this.storageService.delete(storageKey);
       } catch (cleanupError: any) {
-        this.logger.error(`Failed to clean up storage after DB failure for key ${storageKey}`, cleanupError.stack);
+        this.logger.error(
+          `Failed to clean up storage after DB failure for key ${storageKey}`,
+          cleanupError.stack,
+        );
       }
-      
+
       throw new InternalServerErrorException('Failed to save document metadata');
     }
+
+    // 2. Enqueue document for background text chunking and vector embedding generation
+    await this.enqueueDocument(newDoc.id, userId);
+
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const { storageKey: _storageKey, ...safeDoc } = newDoc;
+    return safeDoc as DocumentResponse;
+  }
+
+  /**
+   * Enqueues a document to BullMQ for chunking and vector embedding generation.
+   * Configures retry with exponential backoff.
+   */
+  async enqueueDocument(documentId: string, userId: string): Promise<boolean> {
+    if (!this.documentQueue) {
+      this.logger.warn(
+        `Document queue is not available. Skipping automatic enqueue for ${documentId}.`,
+      );
+      return false;
+    }
+
+    try {
+      await this.documentQueue.add(
+        PROCESS_DOCUMENT_JOB,
+        { documentId, userId },
+        {
+          attempts: 3,
+          backoff: {
+            type: 'exponential',
+            delay: 2000,
+          },
+          removeOnComplete: true,
+        },
+      );
+      this.logger.log(`Enqueued document ${documentId} for vector embedding processing.`);
+      return true;
+    } catch (queueError: any) {
+      this.logger.warn(
+        `Failed to enqueue document ${documentId} to BullMQ: ${queueError.message}`,
+      );
+      return false;
+    }
+  }
+
+  async queueDocumentProcessing(
+    userId: string,
+    documentId: string,
+  ): Promise<{ queued: boolean; message: string }> {
+    const [doc] = await this.databaseService.db
+      .select()
+      .from(documents)
+      .where(and(eq(documents.id, documentId), eq(documents.userId, userId)))
+      .limit(1);
+
+    if (!doc) {
+      throw new NotFoundException('Document not found or you do not have permission to process it');
+    }
+
+    const queued = await this.enqueueDocument(documentId, userId);
+    return {
+      queued,
+      message: queued ? 'Document processing queued successfully' : 'Could not queue document processing',
+    };
   }
 
   async getDocumentsForUser(userId: string): Promise<DocumentResponse[]> {
@@ -78,7 +159,7 @@ export class DocumentsService {
         .select()
         .from(documents)
         .where(eq(documents.userId, userId));
-      
+
       // Strip internal storageKey from client response
       return docs.map(({ storageKey: _k, ...rest }) => rest) as DocumentResponse[];
     } catch (error: any) {
@@ -105,7 +186,7 @@ export class DocumentsService {
     try {
       const body = await this.storageService.get(doc.storageKey);
       if (!body) {
-         throw new NotFoundException('Document content not found in storage');
+        throw new NotFoundException('Document content not found in storage');
       }
 
       const byteArray = await (body as any).transformToByteArray();
@@ -141,7 +222,7 @@ export class DocumentsService {
       throw new InternalServerErrorException('Failed to delete document from storage');
     }
 
-    // 2. Delete metadata from PostgreSQL
+    // 2. Delete metadata from PostgreSQL (Document chunks cascade delete automatically)
     try {
       await this.databaseService.db
         .delete(documents)
