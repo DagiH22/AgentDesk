@@ -10,6 +10,7 @@ export interface DocumentResponse {
   mimeType: string;
   size: number;
   status: 'uploaded' | 'processing' | 'ready' | 'failed';
+  chunkCount?: number;
   createdAt: Date;
   updatedAt: Date;
 }

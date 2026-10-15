@@ -1,172 +1,189 @@
 'use client';
 
 import { useState } from 'react';
-import { 
-  Table, 
-  TableBody, 
-  TableCell, 
-  TableHead, 
-  TableHeader, 
-  TableRow 
+import {
+  Table,
+  TableBody,
+  TableHead,
+  TableHeader,
+  TableRow,
 } from '@/components/ui/table';
 import { Button } from '@/components/ui/button';
-import { Trash2, FileText, Loader2, File, Eye } from 'lucide-react';
-import { useDocuments, useDeleteDocument } from '../hooks/use-documents';
+import { FileText, RefreshCw } from 'lucide-react';
+import {
+  useDocuments,
+  useDeleteDocument,
+  useReindexDocument,
+} from '../hooks/use-documents';
+import { Document } from '../api';
 import { toast } from 'sonner';
 import { DocumentPreviewModal } from './document-preview-modal';
+import { DeleteConfirmationDialog } from './delete-confirmation-dialog';
+import { DocumentRow } from './document-row';
+import { LoadingSpinner } from '@/components/feedback/loading-spinner';
+import { ErrorMessage } from '@/components/feedback/error-message';
+import { EmptyState } from '@/components/feedback/empty-state';
 
 export function DocumentList() {
-  const { data: documents, isLoading, isError } = useDocuments();
+  const { data: documents, isLoading, isError, error, refetch } = useDocuments();
   const deleteMutation = useDeleteDocument();
-  const [deletingId, setDeletingId] = useState<string | null>(null);
-  const [previewDoc, setPreviewDoc] = useState<{id: string, filename: string} | null>(null);
+  const reindexMutation = useReindexDocument();
 
-  const handleDelete = (id: string, filename: string) => {
-    if (!window.confirm(`Are you sure you want to delete ${filename}?`)) {
-      return;
-    }
+  const [previewDoc, setPreviewDoc] = useState<{ id: string; filename: string } | null>(null);
+  const [docToDelete, setDocToDelete] = useState<Document | null>(null);
+  const [reindexingId, setReindexingId] = useState<string | null>(null);
 
-    setDeletingId(id);
+  const handleDeleteConfirm = () => {
+    if (!docToDelete) return;
+
+    const { id, filename } = docToDelete;
     deleteMutation.mutate(id, {
       onSuccess: () => {
-        toast.success(`Document deleted successfully.`);
-        setDeletingId(null);
+        toast.success(`"${filename}" was deleted successfully.`);
+        setDocToDelete(null);
       },
-      onError: (error: any) => {
-        toast.error(error?.response?.data?.message || 'Failed to delete document.');
-        setDeletingId(null);
+      onError: (err: any) => {
+        const message =
+          err?.response?.data?.message || err?.message || 'Failed to delete document.';
+        toast.error(message);
       },
     });
   };
 
-  const formatSize = (bytes: number) => {
-    if (bytes === 0) return '0 B';
-    const k = 1024;
-    const sizes = ['B', 'KB', 'MB', 'GB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+  const handleReindex = (doc: Document) => {
+    setReindexingId(doc.id);
+    reindexMutation.mutate(doc.id, {
+      onSuccess: (data) => {
+        toast.success(
+          data?.message || `Re-indexing job queued for "${doc.filename}".`,
+        );
+        setReindexingId(null);
+      },
+      onError: (err: any) => {
+        const message =
+          err?.response?.data?.message || err?.message || 'Failed to queue re-indexing.';
+        toast.error(message);
+        setReindexingId(null);
+      },
+    });
   };
 
-  const getFileIcon = (mimeType: string) => {
-    if (mimeType === 'application/pdf') {
-      return <FileText className="h-4 w-4 text-red-500" />;
-    }
-    return <File className="h-4 w-4 text-blue-500" />;
-  };
-
+  // 1. Loading State
   if (isLoading) {
     return (
-      <div className="flex justify-center items-center p-12">
-        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-      </div>
-    );
-  }
-
-  if (isError) {
-    return (
-      <div className="p-6 bg-destructive/10 text-destructive rounded-lg">
-        <p>Failed to load documents. Please try again later.</p>
-      </div>
-    );
-  }
-
-  if (!documents || documents.length === 0) {
-    return (
-      <div className="text-center p-12 border rounded-lg bg-card text-card-foreground">
-        <FileText className="mx-auto h-12 w-12 text-muted-foreground mb-4 opacity-20" />
-        <h3 className="text-lg font-medium">No documents</h3>
-        <p className="text-sm text-muted-foreground mt-1">
-          Upload a document to get started building your knowledge base.
+      <div className="flex flex-col items-center justify-center p-16 rounded-xl border bg-card text-card-foreground shadow-xs">
+        <LoadingSpinner size={32} />
+        <p className="mt-4 text-sm text-muted-foreground font-medium animate-pulse">
+          Loading knowledge base documents...
         </p>
       </div>
     );
   }
 
-  return (
-    <div className="rounded-md border bg-card">
-      <Table>
-        <TableHeader>
-          <TableRow>
-            <TableHead>Filename</TableHead>
-            <TableHead>Type</TableHead>
-            <TableHead>Size</TableHead>
-            <TableHead>Status</TableHead>
-            <TableHead>Date</TableHead>
-            <TableHead className="text-right">Actions</TableHead>
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {documents.map((doc) => (
-            <TableRow key={doc.id}>
-              <TableCell className="font-medium flex items-center gap-2">
-                {getFileIcon(doc.mimeType)}
-                <span className="truncate max-w-[200px] sm:max-w-[300px]" title={doc.filename}>
-                  {doc.filename}
-                </span>
-              </TableCell>
-              <TableCell>
-                <span className={`inline-flex items-center text-xs uppercase px-2 py-1 rounded-md font-medium ${
-                  doc.mimeType === 'application/pdf'
-                    ? 'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300'
-                    : 'bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300'
-                }`}>
-                  {doc.mimeType === 'application/pdf' ? 'PDF' : 'TXT'}
-                </span>
-              </TableCell>
-              <TableCell className="text-muted-foreground">
-                {formatSize(doc.size)}
-              </TableCell>
-              <TableCell>
-                <div className="flex items-center">
-                  <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${
-                    doc.status === 'uploaded' ? 'bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300' :
-                    doc.status === 'processing' ? 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-300' :
-                    doc.status === 'ready' ? 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300' :
-                    'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300'
-                  }`}>
-                    {doc.status}
-                  </span>
-                </div>
-              </TableCell>
-              <TableCell className="text-muted-foreground text-sm">
-                {new Date(doc.createdAt).toLocaleDateString()}
-              </TableCell>
-              <TableCell className="text-right space-x-2">
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="text-muted-foreground hover:text-foreground"
-                  disabled={doc.status === 'failed'}
-                  onClick={() => setPreviewDoc({ id: doc.id, filename: doc.filename })}
-                  title="Preview document"
-                >
-                  <Eye className="h-4 w-4" />
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="text-muted-foreground hover:text-destructive"
-                  disabled={deletingId === doc.id}
-                  onClick={() => handleDelete(doc.id, doc.filename)}
-                  title="Delete document"
-                >
-                  {deletingId === doc.id ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <Trash2 className="h-4 w-4" />
-                  )}
-                </Button>
-              </TableCell>
-            </TableRow>
-          ))}
-        </TableBody>
-      </Table>
+  // 2. Error State
+  if (isError) {
+    return (
+      <div className="space-y-4">
+        <ErrorMessage
+          title="Failed to Load Documents"
+          message={
+            (error as any)?.response?.data?.message ||
+            error?.message ||
+            'Could not retrieve documents from the server. Please check your connection and try again.'
+          }
+        />
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => refetch()}
+          className="gap-2"
+        >
+          <RefreshCw className="h-4 w-4" />
+          Retry
+        </Button>
+      </div>
+    );
+  }
 
+  // 3. Empty State
+  if (!documents || documents.length === 0) {
+    return (
+      <EmptyState
+        title="No documents yet"
+        description="Upload your company's PDFs or plain text documents on the left to extract text, chunk content, and generate vector embeddings."
+        icon={<FileText className="h-8 w-8 text-muted-foreground" />}
+      />
+    );
+  }
+
+  const processingCount = documents.filter(
+    (d) => d.status === 'processing' || d.status === 'uploaded',
+  ).length;
+
+  return (
+    <div className="space-y-3">
+      {/* Active Processing Indicator */}
+      {processingCount > 0 && (
+        <div className="flex items-center justify-between text-xs bg-amber-50 dark:bg-amber-950/30 text-amber-800 dark:text-amber-300 px-3.5 py-2 rounded-lg border border-amber-200 dark:border-amber-800/50">
+          <div className="flex items-center gap-2">
+            <span className="relative flex h-2 w-2">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
+              <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-500"></span>
+            </span>
+            <span className="font-medium">
+              {processingCount} document{processingCount === 1 ? ' is' : 's are'} currently being processed in the background.
+            </span>
+          </div>
+          <span className="text-[11px] text-amber-700/80 dark:text-amber-400/80">
+            Auto-refreshing
+          </span>
+        </div>
+      )}
+
+      {/* Documents Table */}
+      <div className="rounded-xl border bg-card shadow-xs overflow-hidden">
+        <Table>
+          <TableHeader>
+            <TableRow className="bg-muted/40 hover:bg-muted/40">
+              <TableHead className="w-[35%] font-semibold text-xs tracking-wider uppercase">Filename</TableHead>
+              <TableHead className="font-semibold text-xs tracking-wider uppercase">Type</TableHead>
+              <TableHead className="font-semibold text-xs tracking-wider uppercase">Size</TableHead>
+              <TableHead className="font-semibold text-xs tracking-wider uppercase">Status</TableHead>
+              <TableHead className="font-semibold text-xs tracking-wider uppercase">Uploaded</TableHead>
+              <TableHead className="text-right font-semibold text-xs tracking-wider uppercase pr-4">Actions</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {documents.map((doc) => (
+              <DocumentRow
+                key={doc.id}
+                document={doc}
+                isDeleting={deleteMutation.isPending && docToDelete?.id === doc.id}
+                isReindexing={reindexingId === doc.id}
+                onPreview={(d) => setPreviewDoc({ id: d.id, filename: d.filename })}
+                onReindex={handleReindex}
+                onDeleteClick={(d) => setDocToDelete(d)}
+              />
+            ))}
+          </TableBody>
+        </Table>
+      </div>
+
+      {/* Preview Sheet Modal */}
       <DocumentPreviewModal
         isOpen={!!previewDoc}
         documentId={previewDoc?.id || null}
         filename={previewDoc?.filename || null}
         onClose={() => setPreviewDoc(null)}
+      />
+
+      {/* Delete Confirmation Dialog */}
+      <DeleteConfirmationDialog
+        isOpen={!!docToDelete}
+        filename={docToDelete?.filename || null}
+        isDeleting={deleteMutation.isPending}
+        onConfirm={handleDeleteConfirm}
+        onCancel={() => setDocToDelete(null)}
       />
     </div>
   );

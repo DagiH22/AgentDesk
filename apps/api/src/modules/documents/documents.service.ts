@@ -11,8 +11,8 @@ import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { DatabaseService } from '../database/database.service';
 import { StorageService } from '../storage/storage.service';
-import { documents } from '@agentdesk/db';
-import { eq, and } from 'drizzle-orm';
+import { documents, documentChunks } from '@agentdesk/db';
+import { eq, and, desc, sql } from 'drizzle-orm';
 import { randomUUID } from 'crypto';
 import { extname } from 'path';
 import { DocumentResponse } from './types/document.types';
@@ -146,22 +146,40 @@ export class DocumentsService {
       throw new NotFoundException('Document not found or you do not have permission to process it');
     }
 
+    // Set status to 'processing' immediately upon request
+    await this.databaseService.db
+      .update(documents)
+      .set({ status: 'processing', updatedAt: new Date() })
+      .where(eq(documents.id, documentId));
+
     const queued = await this.enqueueDocument(documentId, userId);
     return {
       queued,
-      message: queued ? 'Document processing queued successfully' : 'Could not queue document processing',
+      message: queued ? 'Document re-indexing queued successfully' : 'Could not queue document re-indexing',
     };
   }
 
   async getDocumentsForUser(userId: string): Promise<DocumentResponse[]> {
     try {
       const docs = await this.databaseService.db
-        .select()
+        .select({
+          id: documents.id,
+          userId: documents.userId,
+          filename: documents.filename,
+          mimeType: documents.mimeType,
+          size: documents.size,
+          status: documents.status,
+          createdAt: documents.createdAt,
+          updatedAt: documents.updatedAt,
+          chunkCount: sql<number>`count(${documentChunks.id})::int`,
+        })
         .from(documents)
-        .where(eq(documents.userId, userId));
+        .leftJoin(documentChunks, eq(documents.id, documentChunks.documentId))
+        .where(eq(documents.userId, userId))
+        .groupBy(documents.id)
+        .orderBy(desc(documents.createdAt));
 
-      // Strip internal storageKey from client response
-      return docs.map(({ storageKey: _k, ...rest }) => rest) as DocumentResponse[];
+      return docs;
     } catch (error: any) {
       this.logger.error(`Failed to retrieve documents for user ${userId}`, error.stack);
       throw new InternalServerErrorException('Failed to retrieve documents');

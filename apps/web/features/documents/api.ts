@@ -12,6 +12,7 @@ export interface Document {
   mimeType: string;
   size: number;
   status: 'uploaded' | 'processing' | 'ready' | 'failed';
+  chunkCount?: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -20,12 +21,16 @@ export const getDocuments = (): Promise<Document[]> => {
   return apiClient.get<Document[]>('/documents');
 };
 
-export const uploadDocument = ({ file, onProgress }: { file: File, onProgress?: (percent: number) => void }): Promise<Document> => {
+export const uploadDocument = ({
+  file,
+  onProgress,
+}: {
+  file: File;
+  onProgress?: (percent: number) => void;
+}): Promise<Document> => {
   const formData = new FormData();
   formData.append('file', file);
 
-  // We explicitly override the default application/json header from axiosInstance.
-  // Axios will automatically handle the form data boundary formatting.
   return apiClient.post<Document>('/documents', formData, {
     headers: {
       'Content-Type': 'multipart/form-data',
@@ -34,12 +39,18 @@ export const uploadDocument = ({ file, onProgress }: { file: File, onProgress?: 
       if (onProgress && progressEvent.total) {
         onProgress(Math.round((progressEvent.loaded * 100) / progressEvent.total));
       }
-    }
+    },
   });
 };
 
 export const deleteDocument = (id: string): Promise<void> => {
   return apiClient.delete<void>(`/documents/${id}`);
+};
+
+export const reindexDocument = (
+  id: string,
+): Promise<{ queued: boolean; message: string }> => {
+  return apiClient.post<{ queued: boolean; message: string }>(`/documents/${id}/reindex`);
 };
 
 export const getDocumentPreview = (id: string): Promise<{ text: string }> => {
