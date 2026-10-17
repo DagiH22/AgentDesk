@@ -90,7 +90,17 @@ export class DocumentsService {
     }
 
     // 2. Enqueue document for background text chunking and vector embedding generation
-    await this.enqueueDocument(newDoc.id, userId);
+    const enqueued = await this.enqueueDocument(newDoc.id, userId);
+    if (!enqueued) {
+      this.logger.warn(
+        `Failed to enqueue document ${newDoc.id} for processing. Setting status to 'failed'.`,
+      );
+      await this.databaseService.db
+        .update(documents)
+        .set({ status: 'failed', updatedAt: new Date() })
+        .where(eq(documents.id, newDoc.id));
+      newDoc.status = 'failed';
+    }
 
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
     const { storageKey: _storageKey, ...safeDoc } = newDoc;
@@ -99,7 +109,8 @@ export class DocumentsService {
 
   /**
    * Enqueues a document to BullMQ for chunking and vector embedding generation.
-   * Configures retry with exponential backoff.
+   * Prevents concurrent duplicate indexing using deterministic jobId and active job checks,
+   * while allowing intentional re-indexing when previous jobs are finished.
    */
   async enqueueDocument(documentId: string, userId: string): Promise<boolean> {
     if (!this.documentQueue) {
@@ -109,17 +120,47 @@ export class DocumentsService {
       return false;
     }
 
+    const jobId = `doc-${documentId}`;
+
     try {
+      // 1. Check if an active or waiting job already exists for this document (deduplication)
+      const existingJob = await this.documentQueue.getJob(jobId);
+      if (existingJob) {
+        const state = await existingJob.getState();
+        if (
+          state === 'active' ||
+          state === 'waiting' ||
+          state === 'delayed' ||
+          state === 'prioritized'
+        ) {
+          this.logger.warn(
+            `Document ${documentId} already has an active indexing job in state '${state}'. Skipping concurrent duplicate enqueue.`,
+          );
+          return false;
+        }
+
+        // Job previously completed or failed; remove old record to cleanly re-enqueue fresh
+        try {
+          await existingJob.remove();
+        } catch (removeError: any) {
+          this.logger.debug(
+            `Could not remove finished job ${jobId}: ${removeError.message}`,
+          );
+        }
+      }
+
       await this.documentQueue.add(
         PROCESS_DOCUMENT_JOB,
         { documentId, userId },
         {
+          jobId,
           attempts: 3,
           backoff: {
             type: 'exponential',
             delay: 2000,
           },
           removeOnComplete: true,
+          removeOnFail: true,
         },
       );
       this.logger.log(`Enqueued document ${documentId} for vector embedding processing.`);
@@ -146,16 +187,24 @@ export class DocumentsService {
       throw new NotFoundException('Document not found or you do not have permission to process it');
     }
 
-    // Set status to 'processing' immediately upon request
-    await this.databaseService.db
-      .update(documents)
-      .set({ status: 'processing', updatedAt: new Date() })
-      .where(eq(documents.id, documentId));
-
+    // Attempt enqueue first. If enqueue fails or job is already active, do not mark as 'processing'
     const queued = await this.enqueueDocument(documentId, userId);
+
+    if (queued) {
+      await this.databaseService.db
+        .update(documents)
+        .set({ status: 'processing', updatedAt: new Date() })
+        .where(eq(documents.id, documentId));
+
+      return {
+        queued: true,
+        message: 'Document re-indexing queued successfully',
+      };
+    }
+
     return {
-      queued,
-      message: queued ? 'Document re-indexing queued successfully' : 'Could not queue document re-indexing',
+      queued: false,
+      message: 'Could not queue document re-indexing. The document may already be processing or the processing queue is currently unavailable.',
     };
   }
 

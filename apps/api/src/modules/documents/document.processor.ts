@@ -1,7 +1,10 @@
 import { Processor, WorkerHost, OnWorkerEvent } from '@nestjs/bullmq';
 import { Logger } from '@nestjs/common';
 import { Job } from 'bullmq';
-import { DocumentProcessorService } from './document-processor.service';
+import {
+  DocumentProcessorService,
+  DocumentNotFoundError,
+} from './document-processor.service';
 
 export const DOCUMENT_PROCESSING_QUEUE = 'document-processing';
 export const PROCESS_DOCUMENT_JOB = 'process-document';
@@ -30,6 +33,14 @@ export class DocumentProcessor extends WorkerHost {
     try {
       await this.documentProcessorService.processDocument(documentId, userId);
     } catch (error: any) {
+      // If the document was deleted from database, complete cleanly without useless retries
+      if (error instanceof DocumentNotFoundError || error?.name === 'DocumentNotFoundError') {
+        this.logger.warn(
+          `Document ${documentId} no longer exists in database (deleted). Skipping retries and completing job.`,
+        );
+        return;
+      }
+
       // Check if this was the last attempt
       if (job.attemptsMade + 1 >= maxAttempts) {
         this.logger.error(

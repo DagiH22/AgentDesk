@@ -8,6 +8,13 @@ import { DocumentChunksService } from './document-chunks.service';
 import { documents } from '@agentdesk/db';
 import { eq } from 'drizzle-orm';
 
+export class DocumentNotFoundError extends NotFoundException {
+  constructor(documentId: string) {
+    super(`Document ${documentId} not found (deleted or does not exist)`);
+    this.name = 'DocumentNotFoundError';
+  }
+}
+
 @Injectable()
 export class DocumentProcessorService {
   private readonly logger = new Logger(DocumentProcessorService.name);
@@ -42,12 +49,13 @@ export class DocumentProcessorService {
       .limit(1);
 
     if (!doc) {
-      this.logger.error(`Document with ID ${documentId} not found in database.`);
-      throw new NotFoundException(`Document ${documentId} not found`);
+      this.logger.warn(`Document with ID ${documentId} not found in database (likely deleted).`);
+      throw new DocumentNotFoundError(documentId);
     }
 
     if (userId && doc.userId !== userId) {
-      throw new NotFoundException(`Document ${documentId} not found or access denied`);
+      this.logger.warn(`Document with ID ${documentId} access denied for user ${userId}.`);
+      throw new DocumentNotFoundError(documentId);
     }
 
     // 2. Set status to 'processing'
