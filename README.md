@@ -1,4 +1,4 @@
-# Project-X (AgentDesk)
+# AgentDesk
 
 An AI-powered customer support and knowledge-base platform.
 
